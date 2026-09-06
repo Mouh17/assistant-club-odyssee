@@ -1,13 +1,17 @@
 """
-Assistant Club Odyssée — version améliorée (RAG + reranking + interface chat)
-À déployer sur Render.com (Web Service, Docker)
+Assistant Club Odyssée — RAG (recherche + génération) exposé via FastAPI
+À déployer sur Render.com (Web Service, Docker) — plan Free (512 MB RAM)
 """
 
 import io
 import os
+import gc
 import requests
 import numpy as np
-import gradio as gr
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from groq import Groq
 from pypdf import PdfReader
 from fastembed import TextEmbedding
@@ -29,7 +33,7 @@ FICHIERS = ["club-odyssee-paris.pdf", "club-odyssee-lyon.pdf", "club-odyssee-mar
 
 
 # ----------------------------------------------------------------------
-# 2. Chargement des documents (une seule fois au démarrage du Space)
+# 2. Chargement des documents
 # ----------------------------------------------------------------------
 def charger_documents():
     textes = {}
@@ -70,20 +74,23 @@ for f, t in TEXTES.items():
     for i, p in enumerate(decouper(t), 1):
         DOCUMENTS.append({"titre": f"{nom} · passage {i}", "texte": p})
 print(f"✅ {len(DOCUMENTS)} passages chargés.")
+del TEXTES
+gc.collect()
 
 
 # ----------------------------------------------------------------------
-# 3. Encodage (embeddings légers via fastembed / onnxruntime — pas de torch,
-#    donc pas de gros paquets CUDA téléchargés et une empreinte RAM minime,
-#    compatible avec le plan gratuit de Render)
+# 3. Encodage (embeddings légers via fastembed / onnxruntime — pas de torch)
+#    On encode par petits lots pour limiter le pic de mémoire au démarrage.
 # ----------------------------------------------------------------------
 print("🔎 Chargement du modèle d'embedding...")
 encodeur = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 textes_a_encoder = [f"{d['titre']} - {d['texte']}" for d in DOCUMENTS]
-VECTEURS = np.array(list(encodeur.embed(textes_a_encoder)))
+VECTEURS = np.array(list(encodeur.embed(textes_a_encoder, batch_size=8)))
 VECTEURS = VECTEURS / np.linalg.norm(VECTEURS, axis=1, keepdims=True)
 print(f"✅ {len(VECTEURS)} passages encodés.")
+del textes_a_encoder
+gc.collect()
 
 
 def chercher(question, k=3):
@@ -98,8 +105,6 @@ def chercher(question, k=3):
 
 # ----------------------------------------------------------------------
 # 4. Appel au modèle génératif via l'API Groq (gratuite, sans carte bancaire)
-#    Aucun modèle local à charger → empreinte mémoire très légère,
-#    compatible avec le plan gratuit de Render.
 # ----------------------------------------------------------------------
 def demander_au_modele(system_prompt, messages):
     reponse = client.chat.completions.create(
@@ -111,11 +116,8 @@ def demander_au_modele(system_prompt, messages):
     return reponse.choices[0].message.content
 
 
-# ----------------------------------------------------------------------
-# 5. Fonction principale, avec mémoire de conversation
-# ----------------------------------------------------------------------
-def repondre_chat(message, history):
-    """history est fourni automatiquement par gr.ChatInterface (format messages)."""
+def repondre_chat(message, historique):
+    """historique : liste de {"role": "user"|"assistant", "content": str}"""
     passages = chercher(message)
     contexte = "\n\n".join(f"### {t}\n{x}" for t, x, _ in passages)
 
@@ -123,37 +125,40 @@ def repondre_chat(message, history):
         " Tu réponds uniquement à partir des documents fournis. "
         "Si la réponse n'y figure pas, réponds exactement : « Je ne sais pas, il faut demander a l'accueil »")
 
-    messages = []
-    # On réinjecte les derniers échanges pour garder le fil de la conversation
-    for h in history[-6:]:
-        messages.append({"role": h["role"], "content": h["content"]})
-
+    messages = list(historique[-6:])
     messages.append({"role": "user", "content": f"Documents :\n{contexte}\n\nQuestion : {message}"})
 
     reponse = demander_au_modele(system_prompt, messages)
     sources = ", ".join(t for t, _, _ in passages)
-    return f"{reponse}\n\n📎 *Sources : {sources}*"
+    return reponse, sources
 
 
 # ----------------------------------------------------------------------
-# 6. Interface — gr.ChatInterface au lieu de gr.Interface (vraie UI de chat)
+# 5. API FastAPI + frontend statique custom
 # ----------------------------------------------------------------------
-demo = gr.ChatInterface(
-    fn=repondre_chat,
-    type="messages",
-    title="🏋️ Assistant Club Odyssée",
-    description=("Posez vos questions sur les clubs Odyssée (Paris, Lyon, Marseille, Toulouse, Lille). "
-                  "Abonnements, équipements, horaires, résiliation..."),
-    examples=[
-        "Le club de Lyon a-t-il une piscine ?",
-        "Combien coûte l'abonnement Premium à Marseille ?",
-        "Quel est le préavis pour résilier mon abonnement ?",
-    ],
-    theme=gr.themes.Soft(primary_hue="orange"),
-)
+app = FastAPI()
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list = []
+
+
+@app.post("/api/chat")
+def chat_endpoint(req: ChatRequest):
+    reponse, sources = repondre_chat(req.message, req.history)
+    return {"response": reponse, "sources": sources}
+
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/")
+def racine():
+    return FileResponse("static/index.html")
+
 
 if __name__ == "__main__":
-    # Render fournit le port à écouter via la variable d'environnement PORT.
-    # server_name="0.0.0.0" est indispensable pour que Render puisse router le trafic.
+    import uvicorn
     port = int(os.environ.get("PORT", 7860))
-    demo.launch(server_name="0.0.0.0", server_port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
