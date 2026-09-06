@@ -14,15 +14,18 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from groq import Groq
 from pypdf import PdfReader
-from fastembed import TextEmbedding
+from huggingface_hub import InferenceClient
 
 # ----------------------------------------------------------------------
-# 1. Client Groq — gratuit à vie, sans carte bancaire.
-#    La clé API est lue depuis la variable d'environnement GROQ_API_KEY
-#    (à définir sur Render, onglet "Environment" du service).
+# 1. Clients API — tout tourne via des API gratuites, aucun modèle en local
+#    (nécessaire vu la limite de 512 MB de RAM du plan Free de Render).
+#    GROQ_API_KEY et HF_TOKEN sont à définir sur Render, onglet "Environment".
 # ----------------------------------------------------------------------
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 MODELE = "llama-3.3-70b-versatile"  # gratuit, rapide, bon niveau en français
+
+hf_client = InferenceClient(token=os.environ.get("HF_TOKEN"))
+MODELE_EMBEDDING = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 ROLE = ("Tu es l'assistant du Club Odyssée, une chaîne de salles de sport en France. "
         "Tu réponds aux questions des adhérents de façon précise, utile et directe.")
@@ -79,14 +82,24 @@ gc.collect()
 
 
 # ----------------------------------------------------------------------
-# 3. Encodage (embeddings légers via fastembed / onnxruntime — pas de torch)
-#    On encode par petits lots pour limiter le pic de mémoire au démarrage.
+# 3. Encodage via l'API Hugging Face (feature-extraction) — aucun modèle
+#    ni librairie ML lourde en local, empreinte mémoire minimale.
+#    On encode par petits lots pour rester sous les limites de l'API gratuite.
 # ----------------------------------------------------------------------
-print("🔎 Chargement du modèle d'embedding...")
-encodeur = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+print("🔎 Encodage des passages via l'API Hugging Face...")
+
+
+def encoder_lots(textes, taille_lot=16):
+    vecteurs = []
+    for i in range(0, len(textes), taille_lot):
+        lot = textes[i:i + taille_lot]
+        resultat = hf_client.feature_extraction(lot, model=MODELE_EMBEDDING)
+        vecteurs.extend(np.array(resultat))
+    return np.array(vecteurs)
+
 
 textes_a_encoder = [f"{d['titre']} - {d['texte']}" for d in DOCUMENTS]
-VECTEURS = np.array(list(encodeur.embed(textes_a_encoder, batch_size=8)))
+VECTEURS = encoder_lots(textes_a_encoder)
 VECTEURS = VECTEURS / np.linalg.norm(VECTEURS, axis=1, keepdims=True)
 print(f"✅ {len(VECTEURS)} passages encodés.")
 del textes_a_encoder
@@ -95,7 +108,7 @@ gc.collect()
 
 def chercher(question, k=3):
     """Renvoie les k passages les plus proches de la question (similarité cosinus)."""
-    v_question = np.array(list(encodeur.embed([question])))[0]
+    v_question = np.array(hf_client.feature_extraction([question], model=MODELE_EMBEDDING))[0]
     v_question = v_question / np.linalg.norm(v_question)
     similarites = VECTEURS @ v_question
     indices = np.argsort(-similarites)[:k]
