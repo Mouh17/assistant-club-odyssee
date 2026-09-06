@@ -78,11 +78,9 @@ print(f"✅ {len(DOCUMENTS)} passages chargés.")
 #    compatible avec le plan gratuit de Render)
 # ----------------------------------------------------------------------
 print("🔎 Chargement du modèle d'embedding...")
-encodeur = TextEmbedding(model_name="intfloat/multilingual-e5-small")
+encodeur = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
-# Le modèle e5 attend des préfixes "passage:" et "query:" pour bien distinguer
-# les documents indexés des questions posées — c'est sa convention d'usage.
-textes_a_encoder = [f"passage: {d['titre']} - {d['texte']}" for d in DOCUMENTS]
+textes_a_encoder = [f"{d['titre']} - {d['texte']}" for d in DOCUMENTS]
 VECTEURS = np.array(list(encodeur.embed(textes_a_encoder)))
 VECTEURS = VECTEURS / np.linalg.norm(VECTEURS, axis=1, keepdims=True)
 print(f"✅ {len(VECTEURS)} passages encodés.")
@@ -90,7 +88,7 @@ print(f"✅ {len(VECTEURS)} passages encodés.")
 
 def chercher(question, k=3):
     """Renvoie les k passages les plus proches de la question (similarité cosinus)."""
-    v_question = np.array(list(encodeur.embed([f"query: {question}"])))[0]
+    v_question = np.array(list(encodeur.embed([question])))[0]
     v_question = v_question / np.linalg.norm(v_question)
     similarites = VECTEURS @ v_question
     indices = np.argsort(-similarites)[:k]
