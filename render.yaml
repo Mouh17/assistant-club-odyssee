@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: assistant-club-odyssee
+    env: docker
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
