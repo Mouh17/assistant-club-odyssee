@@ -1,5 +1,5 @@
 gradio>=4.44.0
-sentence-transformers>=3.0.0
+fastembed>=0.4.0
 groq>=0.11.0
 pypdf>=4.0.0
 numpy>=1.26.0

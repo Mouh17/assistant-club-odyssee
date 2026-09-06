@@ -10,7 +10,7 @@ import numpy as np
 import gradio as gr
 from groq import Groq
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from fastembed import TextEmbedding
 
 # ----------------------------------------------------------------------
 # 1. Client Groq — gratuit à vie, sans carte bancaire.
@@ -73,31 +73,29 @@ print(f"✅ {len(DOCUMENTS)} passages chargés.")
 
 
 # ----------------------------------------------------------------------
-# 3. Encodage + reranking (amélioration principale vs version atelier)
+# 3. Encodage (embeddings légers via fastembed / onnxruntime — pas de torch,
+#    donc pas de gros paquets CUDA téléchargés et une empreinte RAM minime,
+#    compatible avec le plan gratuit de Render)
 # ----------------------------------------------------------------------
-print("🔎 Chargement des modèles d'embedding et de reranking...")
-encodeur = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-reranker = CrossEncoder("cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
+print("🔎 Chargement du modèle d'embedding...")
+encodeur = TextEmbedding(model_name="intfloat/multilingual-e5-small")
 
-textes_a_encoder = [f"{d['titre']} - {d['texte']}" for d in DOCUMENTS]
-VECTEURS = encodeur.encode(textes_a_encoder, normalize_embeddings=True)
+# Le modèle e5 attend des préfixes "passage:" et "query:" pour bien distinguer
+# les documents indexés des questions posées — c'est sa convention d'usage.
+textes_a_encoder = [f"passage: {d['titre']} - {d['texte']}" for d in DOCUMENTS]
+VECTEURS = np.array(list(encodeur.embed(textes_a_encoder)))
+VECTEURS = VECTEURS / np.linalg.norm(VECTEURS, axis=1, keepdims=True)
 print(f"✅ {len(VECTEURS)} passages encodés.")
 
 
-def chercher(question, k_large=8, k_final=3):
-    """Recherche large par similarité, puis reranking précis avec un cross-encoder."""
-    v_question = encodeur.encode(question, normalize_embeddings=True)
+def chercher(question, k=3):
+    """Renvoie les k passages les plus proches de la question (similarité cosinus)."""
+    v_question = np.array(list(encodeur.embed([f"query: {question}"])))[0]
+    v_question = v_question / np.linalg.norm(v_question)
     similarites = VECTEURS @ v_question
-    candidats_idx = np.argsort(-similarites)[:k_large]
-
-    paires = [[question, DOCUMENTS[i]["texte"]] for i in candidats_idx]
-    scores_rerank = reranker.predict(paires)
-
-    ordre = np.argsort(-scores_rerank)[:k_final]
-    resultats_idx = [candidats_idx[i] for i in ordre]
-
-    return [(DOCUMENTS[i]["titre"], DOCUMENTS[i]["texte"], float(scores_rerank[ordre[j]]))
-            for j, i in enumerate(resultats_idx)]
+    indices = np.argsort(-similarites)[:k]
+    return [(DOCUMENTS[i]["titre"], DOCUMENTS[i]["texte"], float(similarites[i]))
+            for i in indices]
 
 
 # ----------------------------------------------------------------------
