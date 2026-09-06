@@ -22,7 +22,7 @@ from huggingface_hub import InferenceClient
 #    GROQ_API_KEY et HF_TOKEN sont à définir sur Render, onglet "Environment".
 # ----------------------------------------------------------------------
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-MODELE = "llama-3.3-70b-versatile"  # gratuit, rapide, bon niveau en français
+MODELE = "openai/gpt-oss-120b"  # modèle de production Groq, gratuit, bon niveau en français
 
 hf_client = InferenceClient(token=os.environ.get("HF_TOKEN"))
 MODELE_EMBEDDING = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
@@ -159,8 +159,12 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 def chat_endpoint(req: ChatRequest):
-    reponse, sources = repondre_chat(req.message, req.history)
-    return {"response": reponse, "sources": sources}
+    try:
+        reponse, sources = repondre_chat(req.message, req.history)
+        return {"response": reponse, "sources": sources}
+    except Exception as e:
+        print(f"❌ Erreur dans /api/chat : {repr(e)}")
+        return {"response": "Désolé, une erreur technique est survenue côté serveur.", "sources": ""}
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
