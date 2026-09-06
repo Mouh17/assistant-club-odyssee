@@ -1,7 +1,6 @@
 gradio>=4.44.0
 sentence-transformers>=3.0.0
-transformers>=4.44.0
-torch>=2.2.0
+groq>=0.11.0
 pypdf>=4.0.0
 numpy>=1.26.0
 requests>=2.31.0

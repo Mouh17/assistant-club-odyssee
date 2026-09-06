@@ -8,23 +8,17 @@ import os
 import requests
 import numpy as np
 import gradio as gr
+from groq import Groq
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from transformers import pipeline
-import transformers
-import torch
-
-transformers.logging.set_verbosity_error()
 
 # ----------------------------------------------------------------------
-# 1. Configuration du modèle (CPU sur HF Spaces gratuit, sauf upgrade GPU)
+# 1. Client Groq — gratuit à vie, sans carte bancaire.
+#    La clé API est lue depuis la variable d'environnement GROQ_API_KEY
+#    (à définir sur Render, onglet "Environment" du service).
 # ----------------------------------------------------------------------
-if torch.cuda.is_available():
-    MODELE = "Qwen/Qwen2.5-1.5B-Instruct"
-    DEVICE = 0
-else:
-    MODELE = "Qwen/Qwen2.5-0.5B-Instruct"
-    DEVICE = -1
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+MODELE = "llama-3.3-70b-versatile"  # gratuit, rapide, bon niveau en français
 
 ROLE = ("Tu es l'assistant du Club Odyssée, une chaîne de salles de sport en France. "
         "Tu réponds aux questions des adhérents de façon précise, utile et directe.")
@@ -107,22 +101,18 @@ def chercher(question, k_large=8, k_final=3):
 
 
 # ----------------------------------------------------------------------
-# 4. Chargement du modèle génératif
+# 4. Appel au modèle génératif via l'API Groq (gratuite, sans carte bancaire)
+#    Aucun modèle local à charger → empreinte mémoire très légère,
+#    compatible avec le plan gratuit de Render.
 # ----------------------------------------------------------------------
-print("🧠 Chargement du modèle génératif (1 à 3 min)...")
-generateur = pipeline("text-generation", model=MODELE, device=DEVICE)
-generateur.tokenizer.clean_up_tokenization_spaces = False
-generateur.model.generation_config.max_new_tokens = 200
-generateur.model.generation_config.do_sample = False
-generateur.model.generation_config.temperature = None
-generateur.model.generation_config.top_p = None
-generateur.model.generation_config.top_k = None
-print("✅ Modèle chargé, l'assistant est prêt.")
-
-
-def demander_au_modele(messages):
-    sortie = generateur(messages)
-    return sortie[0]["generated_text"][-1]["content"]
+def demander_au_modele(system_prompt, messages):
+    reponse = client.chat.completions.create(
+        model=MODELE,
+        max_tokens=500,
+        temperature=0,
+        messages=[{"role": "system", "content": system_prompt}] + messages,
+    )
+    return reponse.choices[0].message.content
 
 
 # ----------------------------------------------------------------------
@@ -133,17 +123,18 @@ def repondre_chat(message, history):
     passages = chercher(message)
     contexte = "\n\n".join(f"### {t}\n{x}" for t, x, _ in passages)
 
-    messages = [{"role": "system", "content": ROLE +
+    system_prompt = (ROLE +
         " Tu réponds uniquement à partir des documents fournis. "
-        "Si la réponse n'y figure pas, réponds exactement : « Je ne sais pas, il faut demander a l'accueil »"}]
+        "Si la réponse n'y figure pas, réponds exactement : « Je ne sais pas, il faut demander a l'accueil »")
 
+    messages = []
     # On réinjecte les derniers échanges pour garder le fil de la conversation
     for h in history[-6:]:
         messages.append({"role": h["role"], "content": h["content"]})
 
     messages.append({"role": "user", "content": f"Documents :\n{contexte}\n\nQuestion : {message}"})
 
-    reponse = demander_au_modele(messages)
+    reponse = demander_au_modele(system_prompt, messages)
     sources = ", ".join(t for t, _, _ in passages)
     return f"{reponse}\n\n📎 *Sources : {sources}*"
 
